@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel build evo</title>
+</head>
+
+<body>
+    <h1 id="loading">LOADING</h1>
+    <div id="divzone"> </div>
+    <script name="userconsts">
+        //const fov = 1 / Math.tan(100 / 2 * Math.PI / 180);  //hight
+        //const fov = 1 / Math.tan(30 * Math.PI / 180);    //low
+        //const fov = 1 / Math.tan(80 * Math.PI / 180);    //usual
+        const fov = 1 / Math.tan(44 * Math.PI / 180); //my
+
+        const rotspeedx = 0.003;
+        const rotspeedy = 0.003;
+        const movespeed = 0.13;
+
+        const size = 100;
+        const sunsize = 0.02;
+        const skyvx = 7;
+        const skyvy = 2;
+        const skyvz = 1;
+    </script>
+    <script name="gameconsts">
+        const w = window.screen.width;
+        const h = window.screen.height;
+        const loading = document.getElementById("loading");
+        const divzone = document.getElementById("divzone");
+        const canv = document.createElement("canvas");
+        canv.width = w; canv.height = h;
+        const scaley = (w > h) ? 1 : (h / w);
+        const scalex = (w > h) ? (w / h) : 1;
+
+    </script>
+    <script name="proceduralgeneration">
+        class PG {
+            static seed = Math.floor(Math.random() * Math.pow(2, 31));//0<->2^31-1
+            static rand256(ps) { return (((this.seed >> (ps & 3)) ^ ps ^ ((Math.clz32(ps ^ this.seed) * Math.floor(1 / (3 + Math.sin(ps | this.seed)))) ^ Math.clz32((ps & 832) * ps & this.seed))) >> (this.seed & ps & 15)) & 255; }
+            static gencolors() {
+                let a = new Float32Array(1024);
+                let i = 0;
+                while (i < 1024) {
+                    a[i] = this.rand256(i) / 256; i++;
+                    a[i] = this.rand256(i) / 256; i++;
+                    a[i] = this.rand256(i) / 256; i++;
+                    a[i] = 1; i++;
+                }
+                return a;
+            }
+            static genvoxels(colors) {
+                let a = new Float32Array(size * size * size * 4);
+                let i = 0;
+                while (i < a.length) {
+                    if (this.rand256(i + 1009831) > 210) {
+                        let k = this.rand256(i + 1031) * 4;
+                        a[i] = colors[k]; i++;
+                        a[i] = colors[k + 1]; i++;
+                        a[i] = colors[k + 2]; i++;
+                        a[i] = colors[k + 3]; i++;
+                    } else {
+                        a[i] = 0; i++;
+                        a[i] = 0; i++;
+                        a[i] = 0; i++;
+                        a[i] = 0; i++;
+                    }
+                }
+                return a;
+            }
+            static get() { return this.genvoxels(this.gencolors()); }
+        }
+        console.info(`seed: ${PG.seed}`);
+    </script>
+    <script name="shadercreator">
+        function floatstr(n) { let s = `${n}`; if (s.indexOf(".") < 0) { s += "."; } return s; }
+        let vertexsource = `#version 300 es
+            in vec2 screenpos;
+            out vec2 uv;
+            void main() {
+                uv = vec2(screenpos.x*${floatstr(scalex)},screenpos.y*${floatstr(scaley)});
+                gl_Position = vec4(screenpos.xy, 0.0, 1.0);
+            }`;
+
+        function gpc_raycast_testout(t, s) {
+            if (s < 0) {
+                return `if(p.${t}<0.){return tocastsky;}`
+            } else {
+                return `if(p.${t}>${floatstr(size)}){return tocastsky;}`
+            }
+        }
+        function gpc_raycast_inwhiletest(t, s, x, y, z) {/////////////////////////////////////////////!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!.x
+            return `p.${t}${(s < 0) ? "-" : "+"}=1.;
+                    ${gpc_raycast_testout(t, s)}
+                    vec3 l=(p+vec3(${x < 0 ? "0." : "-1."},${y < 0 ? "0." : "-1."},${z < 0 ? "0." : "-1."}))/${floatstr(size)};
+                    if((l.x<1.)&&(l.x>=0.)){if((l.y<1.)&&(l.y>=0.)){if((l.z<1.)&&(l.z>=0.)){
+                        vec4 i=texture(voxelscolors,l);
+                        if(i.w>${floatstr((1 / 256) / 4)}){
+                        return casted(t.${t}*dray+s,${"xyz".indexOf(t)},i);
+                    }
+                    }}}
+                    
+                    t.${t}=opi(p.${t},dray.${t},s.${t});`;
+        }
+        function gpc_raycast(x, y, z) {
+            return `vec3 p=vec3(${x < 0 ? "floor" : "ceil"}(s.x),${y < 0 ? "floor" : "ceil"}(s.y),${z < 0 ? "floor" : "ceil"}(s.z));
+                    bool e=true;
+                    vec3 t=vec3(opi(p.x,dray.x,s.x),opi(p.y,dray.y,s.y),opi(p.z,dray.z,s.z));
+                    ${gpc_raycast_testout("x", x)}
+                    ${gpc_raycast_testout("y", y)}
+                    ${gpc_raycast_testout("z", z)}
+                    while(e){
+                        if(t.x<t.y){
+                            if(t.x<t.z){
+                                ${gpc_raycast_inwhiletest("x", x, x, y, z)}
+                            }else{
+                                ${gpc_raycast_inwhiletest("z", z, x, y, z)}
+                            }
+                        }else{
+                            if(t.y<t.z){
+                                ${gpc_raycast_inwhiletest("y", y, x, y, z)}
+                            }else{
+                                ${gpc_raycast_inwhiletest("z", z, x, y, z)}
+                            }
+                        }
+                    }`;
+        }
+        let fragmentsource = `#version 300 es
+            precision mediump float;
+            precision mediump sampler3D;
+            in vec2 uv;
+            uniform vec3 pos;
+            uniform vec2 rot;
+            uniform sampler3D voxelscolors;
+            out vec4 fragColor;
+            float INFINITYLIKE=999999.;
+            float REALLYSMALL=0.0001;
+            float REALLYSMALL2=0.00016;
+            vec3 SKYVECTOR=vec3(${floatstr(skyvx)},${floatstr(skyvy)},${floatstr(skyvz)});
+            struct casted {
+                vec3 rpos;
+                int efasata;
+                vec4 i;
+            };
+            casted tocastsky=casted(vec3(0.,0.,0.),-1,vec4(0.));
+            float opi(in float k, in float d, in float s){
+                if(abs(d)<REALLYSMALL){return INFINITYLIKE;}
+                return (k-s)/d;
+            }            
+            casted raycast(in vec3 s, in vec3 dray){
+                if(dray.x<0.){if(dray.y<0.){if(dray.z<0.){
+                    ${gpc_raycast(-1, -1, -1)}
+                }else{
+                    ${gpc_raycast(-1, -1, 1)}
+                }}else{if(dray.z<0.){
+                    ${gpc_raycast(-1, 1, -1)}
+                }else{
+                    ${gpc_raycast(-1, 1, 1)}
+                }}}else{if(dray.y<0.){if(dray.z<0.){
+                    ${gpc_raycast(1, -1, -1)}
+                }else{
+                    ${gpc_raycast(1, -1, 1)}
+                }}else{if(dray.z<0.){
+                    ${gpc_raycast(1, 1, -1)}
+                }else{
+                    ${gpc_raycast(1, 1, 1)}
+                }}}
+            }
+            float skynormangle(in vec3 dray){
+                return 1.-acos(dot(SKYVECTOR,dray)/sqrt(dot(dray,dray)*${floatstr(skyvx * skyvx + (skyvy * skyvy) + (skyvz * skyvz))}))/${floatstr(Math.PI)};
+            }
+            bool cheakoutnormangle(in vec3 dray,in vec3 dray2){
+                return dot(dray2,dray)/sqrt(dot(dray,dray)*dot(dray2,dray2))<0.;
+            }
+            vec3 sky(in vec3 dray){
+                float k=skynormangle(dray);
+                if(k>${floatstr(1 - sunsize)}){
+                    return vec3(0.96,0.96,0.81);
+                }else{return vec3(0.75,0.85,0.99)*k;}
+            }
+            vec3 mirror(in vec3 d, in int m){
+                if(m==0){
+                    return vec3(-d.x,d.yz);
+                }else{if(m==1){
+                    return vec3(d.x,-d.y,d.z);
+                }else{
+                    return vec3(d.xy,-d.z);
+                }
+                }
+            }
+            void main() {
+                vec3 dray=vec3(${floatstr(fov)},uv.yx);
+                float sin_r=sin(rot.y);
+                float cos_r=cos(rot.y);
+                dray.xy=mat2(cos_r,-sin_r,sin_r,cos_r)*dray.xy;
+                sin_r=sin(rot.x);
+                cos_r=cos(rot.x);
+                dray.xz=mat2(cos_r,sin_r,-sin_r,cos_r)*dray.xz;
+                
+                casted a=raycast(pos,dray);
+                if(a.efasata==-1){
+                    fragColor =  vec4(sky(dray),1.);
+                    return;
+                }else{
+                    vec3 mdray=mirror(dray,a.efasata);
+                    vec3 col=a.i.xyz;
+                    if(a.efasata==0){if(cheakoutnormangle(mdray,vec3(1.,0.,0.))){
+                            fragColor =  vec4(col*skynormangle(mdray)/2.,1.);
+                            return;
+                    }}else{if(a.efasata==1){if(cheakoutnormangle(mdray,vec3(0.,1.,0.))){
+                            fragColor =  vec4(col*skynormangle(mdray)/2.,1.);
+                            return;
+                    }}else{if(cheakoutnormangle(mdray,vec3(0.,0.,1.))){
+                            fragColor =  vec4(col*skynormangle(mdray)/2.,1.);
+                            return;
+                    }}}
+                    vec3 pospmin=a.rpos+(SKYVECTOR/sqrt(dot(SKYVECTOR,SKYVECTOR))*REALLYSMALL2);
+                    //vec3 pospmin=a.rpos;
+                    casted b=raycast(pospmin,SKYVECTOR);
+                    if(b.efasata==-1){
+                        fragColor =  vec4(col*skynormangle(mdray),1.);
+                        return;
+                    }else{
+                        fragColor =  vec4(col*skynormangle(mdray)/2.,1.);
+                        return;
+                    }   
+                }
+
+                fragColor = vec4(1., 1., 0., 1.);return;
+            }`;
+        console.log(fragmentsource);
+        console.log(fragmentsource.split("\n"));
+        function createShaderProgram(gl, vertexSource, fragmentSource) {
+            // Create vertex shader
+            const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vertexShader, vertexSource);
+            gl.compileShader(vertexShader);
+
+            // Check for vertex shader compilation errors
+            if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                console.error('Vertex shader compilation error:', gl.getShaderInfoLog(vertexShader));
+                gl.deleteShader(vertexShader);
+                return null;
+            }
+
+            // Create fragment shader
+            const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fragmentShader, fragmentSource);
+            gl.compileShader(fragmentShader);
+
+            // Check for fragment shader compilation errors
+            if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                console.error('Fragment shader compilation error:', gl.getShaderInfoLog(fragmentShader));
+                gl.deleteShader(fragmentShader);
+                return null;
+            }
+
+            // Create WebGL program
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            // Check for program linking errors
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program linking error:', gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return null;
+            }
+
+            // Clean up shaders
+            gl.deleteShader(vertexShader);
+            gl.deleteShader(fragmentShader);
+
+            return program;
+        }
+    </script>
+    <script name="movingfunctions">
+        const player = { "pos": { "x": -1, "y": -1, "z": -1 }, "rot": { "x": 0, "y": 0 } }
+        let optimize = { "anypress": true };
+        function setmovingfunctions() {
+            canv.onmousemove = (e) => {
+                player.rot.x += rotspeedx * e.movementX;
+                player.rot.y += rotspeedy * e.movementY;
+                player.rot.x = (player.rot.x % (2 * Math.PI) + (2 * Math.PI)) % (2 * Math.PI);
+                if (player.rot.y > Math.PI / 2) { player.rot.y = Math.PI / 2; } else {
+                    if (player.rot.y < - Math.PI / 2) { player.rot.y = -Math.PI / 2; }
+                }
+                optimize.anypress = true;
+            }
+            document.onkeydown = (e) => {
+                switch (e.code) {
+                    case "KeyE":
+                        player.pos.x -= Math.cos(player.rot.y) * Math.cos(player.rot.x) * movespeed;
+                        player.pos.y += Math.sin(player.rot.y) * movespeed;
+                        player.pos.z -= Math.cos(player.rot.y) * Math.sin(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "KeyQ":
+                        player.pos.x += Math.cos(player.rot.y) * Math.cos(player.rot.x) * movespeed;
+                        player.pos.y -= Math.sin(player.rot.y) * movespeed;
+                        player.pos.z += Math.cos(player.rot.y) * Math.sin(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "KeyW":
+                        player.pos.x += Math.cos(player.rot.x) * movespeed;
+                        player.pos.z += Math.sin(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "KeyS":
+                        player.pos.x -= Math.cos(player.rot.x) * movespeed;
+                        player.pos.z -= Math.sin(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "KeyA":
+                        player.pos.x += Math.sin(player.rot.x) * movespeed;
+                        player.pos.z -= Math.cos(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "KeyD":
+                        player.pos.x -= Math.sin(player.rot.x) * movespeed;
+                        player.pos.z += Math.cos(player.rot.x) * movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "Space":
+                        player.pos.y += movespeed;
+                        optimize.anypress = true;
+                        break;
+                    case "ShiftLeft":
+                        player.pos.y -= movespeed;
+                        optimize.anypress = true;
+                        break;
+                }
+                return false;
+            }
+
+
+        }
+        document.body.appendChild(canv);
+        canv.onclick = () => {
+            canv.requestPointerLock();
+            canv.requestFullscreen();
+            setmovingfunctions();
+        };
+        document.oncontextmenu = () => { return false; }
+        document.onselect = () => { return false; }
+    </script>
+    <script name="mainloop">
+        const gl = canv.getContext("webgl2");
+        const render = createShaderProgram(gl, vertexsource, fragmentsource);
+        console.log(render);
+        gl.useProgram(render);
+        vertexsource = undefined; fragmentsource = undefined; gpc_raycast = undefined; gpc_raycast_inwhiletest = undefined; gpc_raycast_testout = undefined;
+        let voxels = PG.get(); console.log(voxels);
+
+        const fullscreen = new Float32Array([-1, -1, -1, 1, 1, 1, -1, -1, 1, -1, 1, 1]);
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, fullscreen, gl.STATIC_DRAW);
+
+
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, texture);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA32F, size, size, size, 0, gl.RGBA, gl.FLOAT, voxels);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_3D, null);
+        const screenposLoc = gl.getAttribLocation(render, "screenpos");
+        const posLoc = gl.getUniformLocation(render, "pos");
+        const rotLoc = gl.getUniformLocation(render, "rot");
+        const voxelscolorsLoc = gl.getUniformLocation(render, "voxelscolors");
+        function inr(t) {
+            gl.enableVertexAttribArray(screenposLoc);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.vertexAttribPointer(screenposLoc, 2, gl.FLOAT, false, 0, 0);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_3D, texture);
+            gl.uniform1i(voxelscolorsLoc, 0);
+
+            gl.uniform3f(posLoc, player.pos.x, player.pos.y, player.pos.z);
+            gl.uniform2f(rotLoc, player.rot.x, player.rot.y);
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        }
+        function r(t = 0) {
+            if (optimize.anypress) { inr(t); }
+            optimize.anypress = false;
+            requestAnimationFrame(r);
+        }
+        loading.style.display = "none";
+        requestAnimationFrame(r);
+    </script>
+</body>
+
+</html>
